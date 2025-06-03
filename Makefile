@@ -13,7 +13,7 @@ container: ## create docker container
 	docker build -t registry.panos.pet/fousekistream .
 
 .PHONY: container-push
-container-push: ## push docker image to registry
+container-push: container ## push docker image to registry
 	docker push registry.panos.pet/fousekistream
 
 .PHONY: run
