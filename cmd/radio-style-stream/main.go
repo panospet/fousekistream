@@ -33,6 +33,12 @@ func main() {
 	go broadcaster(cfg.Filename)
 
 	http.HandleFunc("/", streamHandler)
+	http.HandleFunc(
+		"/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, "OK")
+		},
+	)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("Streaming on http://localhost%s", addr)
