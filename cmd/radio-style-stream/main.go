@@ -92,12 +92,14 @@ func (b *broadcaster) addClient(c chan []byte) {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 	b.clients[c] = struct{}{}
+	log.Printf("new client connected, total clients: %d", len(b.clients))
 }
 
 func (b *broadcaster) removeClient(c chan []byte) {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 	delete(b.clients, c)
+	log.Printf("client disconnected, total clients: %d", len(b.clients))
 }
 
 func (b *broadcaster) broadcast(data []byte) {
