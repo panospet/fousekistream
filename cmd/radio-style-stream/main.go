@@ -11,8 +11,7 @@ import (
 )
 
 type config struct {
-	Filename  string `env:"FILENAME" envdefault:"fousekis_all.mp3"`
-	ChunkSize int    `env:"CHUNK_SIZE" envdefault:"4096"`
+	Filename string `env:"FILENAME" envdefault:"fousekis_all.mp3"`
 }
 
 type broadcaster struct {
