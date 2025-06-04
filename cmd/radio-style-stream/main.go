@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,112 +11,103 @@ import (
 )
 
 type config struct {
-	Filename string `env:"FILENAME" envDefault:"./fousekis_all.mp3"`
-	Port     int    `env:"PORT" envDefault:"8000"`
+	Filename  string `env:"FILENAME" envdefault:"fousekis_all.mp3"`
+	ChunkSize int    `env:"CHUNK_SIZE" envdefault:"4096"`
 }
 
-type client chan []byte
-
-var (
-	clients   = make(map[client]struct{})
-	clientsMu sync.Mutex
-)
+type broadcaster struct {
+	clients map[chan []byte]struct{}
+	mtx     sync.Mutex
+}
 
 func main() {
 	var cfg config
 	if err := env.Parse(&cfg); err != nil {
-		log.Fatalf("Error parsing env vars: %v", err)
+		log.Fatalf("%+v", err)
 	}
 
-	go broadcaster(cfg.Filename)
+	mp3File, err := os.ReadFile(cfg.Filename)
+	if err != nil {
+		log.Fatalf("failed to read file %s: %v", cfg.Filename, err)
+	}
 
-	http.HandleFunc("/", streamHandler)
+	bc := &broadcaster{
+		clients: make(map[chan []byte]struct{}),
+	}
+
+	// Broadcast loop
+	go func() {
+		for {
+			for _, chunk := range chunkData(mp3File, 1600) {
+				bc.broadcast(chunk)
+				time.Sleep(100 * time.Millisecond) // The 1600B chunks are sent every 100ms, creating an effective bitrate of 128kbps
+			}
+		}
+	}()
+
 	http.HandleFunc(
-		"/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "OK")
+		"/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "audio/mpeg")
+
+			clientChan := make(chan []byte)
+			bc.addClient(clientChan)
+			defer bc.removeClient(clientChan)
+
+			for chunk := range clientChan {
+				w.Write(chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
 		},
 	)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("Streaming on http://localhost%s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatal(err)
+	http.HandleFunc(
+		"/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Welcome to the radio-style stream server!"))
+		},
+	)
+
+	log.Printf("Serving stream :8088")
+	if err := http.ListenAndServe(":8088", nil); err != nil {
+		log.Fatalf("failed to start server: %v", err)
 	}
 }
 
-func broadcaster(filename string) {
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Fatalf("Failed to open file: %v", err)
-	}
-
-	for {
-		buf := make([]byte, 4096)
-
-		for {
-			n, err := file.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				broadcast(data)
-			}
-
-			if err == io.EOF {
-				break // start over
-			}
-			if err != nil {
-				log.Printf("Read error: %v", err)
-				break
-			}
-
-			// Control stream pace (approximate)
-			time.Sleep(20 * time.Millisecond)
+// Chunks file to array of byte slices
+func chunkData(data []byte, size int) [][]byte {
+	var chunks [][]byte
+	for i := 0; i < len(data); i += size {
+		end := i + size
+		if end > len(data) {
+			end = len(data)
 		}
+		chunks = append(chunks, data[i:end])
 	}
+	return chunks
 }
 
-func broadcast(data []byte) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
+func (b *broadcaster) addClient(c chan []byte) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	b.clients[c] = struct{}{}
+}
 
-	for c := range clients {
+func (b *broadcaster) removeClient(c chan []byte) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	delete(b.clients, c)
+}
+
+func (b *broadcaster) broadcast(data []byte) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	for client := range b.clients {
 		select {
-		case c <- data:
-		default:
-			// Client too slow or disconnected
-			close(c)
-			delete(clients, c)
+		case client <- data:
+		default: // Skip if client buffer is full
 		}
-	}
-}
-
-func streamHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "audio/mpeg")
-
-	c := make(client, 100)
-	clientsMu.Lock()
-	clients[c] = struct{}{}
-	clientsMu.Unlock()
-
-	defer func() {
-		clientsMu.Lock()
-		delete(clients, c)
-		clientsMu.Unlock()
-	}()
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
-		return
-	}
-
-	// Send data from broadcaster
-	for data := range c {
-		_, err := w.Write(data)
-		if err != nil {
-			return
-		}
-		flusher.Flush()
 	}
 }
