@@ -39,7 +39,7 @@ func main() {
 		for {
 			for _, chunk := range chunkData(mp3File, 1600) {
 				bc.broadcast(chunk)
-				time.Sleep(100 * time.Millisecond) // The 1600B chunks are sent every 100ms, creating an effective bitrate of 128kbps
+				time.Sleep(100 * time.Millisecond) // The 1600B chunks are sent every 100ms, creating a bitrate of 128kbps
 			}
 		}
 	}()
@@ -48,14 +48,25 @@ func main() {
 		"/", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "audio/mpeg")
 
-			clientChan := make(chan []byte)
+			clientChan := make(chan []byte, 10) // Buffered channel to avoid blocking
 			bc.addClient(clientChan)
 			defer bc.removeClient(clientChan)
 
-			for chunk := range clientChan {
-				w.Write(chunk)
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
+			notify := r.Context().Done()
+
+			for {
+				select {
+				case chunk := <-clientChan:
+					_, err := w.Write(chunk)
+					if err != nil {
+						return // Client gone, exit handler
+					}
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				case <-notify:
+					close(clientChan) // Close channel to signal client disconnect
+					return            // Client closed connection, exit handler
 				}
 			}
 		},
